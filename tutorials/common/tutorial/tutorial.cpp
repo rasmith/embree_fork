@@ -248,6 +248,7 @@ namespace embree
         else if (mode == "ao"      ) shader = SHADER_AMBIENT_OCCLUSION;
         else if (mode == "depth"   ) shader = SHADER_DEPTH;
         else if (mode == "curvature"   ) shader = SHADER_CURVATURE;
+        else if (mode == "diffuse_albedo"   ) shader = SHADER_DIFFUSE_ALBEDO;
         else throw std::runtime_error("invalid shader:" +mode);
       },
       "--shader <string>: sets shader to use at startup\n"
@@ -1003,6 +1004,7 @@ namespace embree
     case SHADER_AMBIENT_OCCLUSION: device_key_pressed(GLFW_KEY_F11); break;
     case SHADER_DEPTH: device_key_pressed(GLFW_KEY_F13); break;
     case SHADER_CURVATURE: device_key_pressed(GLFW_KEY_F14); break;
+    case SHADER_DIFFUSE_ALBEDO: device_key_pressed(GLFW_KEY_F15); break;
     };
 
     /* benchmark mode */

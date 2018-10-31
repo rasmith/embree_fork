@@ -86,6 +86,7 @@ inline Vec3fa faceforward( const Vec3fa& N, const Vec3fa& I, const Vec3fa& Ng ) 
 #define GLFW_KEY_F12                301
 #define GLFW_KEY_F13                302
 #define GLFW_KEY_F14                303
+#define GLFW_KEY_F15                304
 #endif
 
 /* standard shading function */

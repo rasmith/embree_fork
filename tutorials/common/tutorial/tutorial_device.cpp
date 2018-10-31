@@ -447,6 +447,16 @@ void renderTileCurvature(int taskIndex,
 }
 
 extern "C" int g_instancing_mode;
+struct BRDF
+{
+  float Ns;               /*< specular exponent */
+  float Ni;               /*< optical density for the surface (index of refraction) */
+  Vec3fa Ka;              /*< ambient reflectivity */
+  Vec3fa Kd;              /*< diffuse reflectivity */
+  Vec3fa Ks;              /*< specular reflectivity */
+  Vec3fa Kt;              /*< transmission filter */
+  float dummy[30];
+};
 
 /* renders a single pixel with geometry normal shading */
 Vec3fa renderPixelDiffuseAlbedo(float x, float y, const ISPCCamera& camera, RayStats& stats)
@@ -469,22 +479,80 @@ Vec3fa renderPixelDiffuseAlbedo(float x, float y, const ISPCCamera& camera, RayS
   rtcIntersect1(g_scene,&context,RTCRayHit_(ray));
   RayStats_addRay(stats);
 
-  ISPCGeometry* geometry = nullptr;
-  if (g_instancing_mode == ISPC_INSTANCING_NONE) 
-    geometry = g_ispc_scene->geometries[ray.geomID];
-  
-
-  /* shade pixel */
   if (ray.geomID == RTC_INVALID_GEOMETRY_ID) return Vec3fa(0.0f, 0.0f, 0.0f);
-  else  {
-      float curvature[3];
-      unsigned int geomID = ray.geomID; 
-      RTCGeometry geometry = rtcGetGeometry(g_scene,geomID);
-      rtcInterpolate0(geometry, ray.primID, ray.u, ray.v, 
-                      RTC_BUFFER_TYPE_VERTEX_ATTRIBUTE, 0, &curvature[0], 3);
-      Vec3fa color(curvature[0], curvature[1], curvature[2]);
-      return color;
+
+  ISPCGeometry* geometry = nullptr;
+  int materialID = 0;
+  Vec3fa color  = Vec3fa(0.0f);
+  DifferentialGeometry dg;
+  if (g_instancing_mode == ISPC_INSTANCING_NONE)  {
+    geometry = g_ispc_scene->geometries[ray.geomID];
+     if (geometry->type == TRIANGLE_MESH) {
+       ISPCTriangleMesh* mesh = (ISPCTriangleMesh*) geometry;
+       materialID = mesh->geom.materialID;
+       if (mesh->texcoords)
+       {
+         ISPCTriangle* tri = &mesh->triangles[dg.primID];
+         const Vec2f st0 = mesh->texcoords[tri->v0];
+         const Vec2f st1 = mesh->texcoords[tri->v1];
+         const Vec2f st2 = mesh->texcoords[tri->v2];
+         const float u = ray.u, v = ray.v, w = 1.0f-ray.u-ray.v;
+         const Vec2f st = w*st0 + u*st1 + v*st2;
+         dg.u = st.x;
+         dg.v = st.y;
+       }
+       if (mesh->normals)
+       {
+         if (mesh->numTimeSteps == 1)
+         {
+           ISPCTriangle* tri = &mesh->triangles[dg.primID];
+           const Vec3fa n0 = Vec3fa(mesh->normals[0][tri->v0]);
+           const Vec3fa n1 = Vec3fa(mesh->normals[0][tri->v1]);
+           const Vec3fa n2 = Vec3fa(mesh->normals[0][tri->v2]);
+           const float u = ray.u, v = ray.v, w = 1.0f-ray.u-ray.v;
+           dg.Ns = w*n0 + u*n1 + v*n2;
+         }
+         else
+         {
+           ISPCTriangle* tri = &mesh->triangles[dg.primID];
+           float f = mesh->numTimeSteps*ray.time();
+           int itime = clamp((int)floor(f),0,(int)mesh->numTimeSteps-2);
+           float t1 = f-itime;
+           float t0 = 1.0f-t1;
+           const Vec3fa a0 = Vec3fa(mesh->normals[itime+0][tri->v0]);
+           const Vec3fa a1 = Vec3fa(mesh->normals[itime+0][tri->v1]);
+           const Vec3fa a2 = Vec3fa(mesh->normals[itime+0][tri->v2]);
+           const Vec3fa b0 = Vec3fa(mesh->normals[itime+1][tri->v0]);
+           const Vec3fa b1 = Vec3fa(mesh->normals[itime+1][tri->v1]);
+           const Vec3fa b2 = Vec3fa(mesh->normals[itime+1][tri->v2]);
+           const Vec3fa n0 = t0*a0 + t1*b0;
+           const Vec3fa n1 = t0*a1 + t1*b1;
+           const Vec3fa n2 = t0*a2 + t1*b2;
+           const float u = ray.u, v = ray.v, w = 1.0f-ray.u-ray.v;
+           dg.Ns = w*n0 + u*n1 + v*n2;
+         }
+       }
+       ISPCMaterial** materials = &g_ispc_scene->materials[0];
+       ISPCMaterial* material = materials[materialID];
+       BRDF brdf;
+       if (material->type == MATERIAL_OBJ) {
+         ISPCOBJMaterial* obj_material = (ISPCOBJMaterial*) material;
+         float d = obj_material->d;
+         if (obj_material->map_d) d *= getTextureTexel1f(obj_material->map_d,dg.u,dg.v);
+         brdf.Ka = Vec3fa(obj_material->Ka);
+         brdf.Kd = d * Vec3fa(obj_material->Kd);
+         if (obj_material->map_Kd) 
+           brdf.Kd = brdf.Kd * getTextureTexel3f(obj_material->map_Kd,dg.u,dg.v);
+         brdf.Ks = d * Vec3fa(obj_material->Ks);
+         brdf.Ns = obj_material->Ns;
+         brdf.Kt = (1.0f-d)*Vec3fa(obj_material->Kt);
+         brdf.Ni = obj_material->Ni;
+         color = brdf.Kd;
+       }
+     }
   }
+  
+  return color;
 }
 
 void renderTileDiffuseAlbedo(int taskIndex,
@@ -742,8 +810,8 @@ Vec3fa renderPixelAmbientOcclusion(float x, float y, const ISPCCamera& camera, R
     /* trace shadow ray */
     RTCIntersectContext context;
     rtcInitIntersectContext(&context);
-    rtcOccluded1(g_scene,&context,RTCRay_(shadow));
-    //rtcIntersect1(g_scene,&context,shadow);
+    //rtcOccluded1(g_scene,&context,RTCRay_(shadow));
+    rtcIntersect1(g_scene,&context,RTCRayHit_(shadow));
     RayStats_addShadowRay(stats);
 
     /* add light contribution */
@@ -997,6 +1065,10 @@ extern "C" void device_key_pressed_default(int key)
   }
   else if (key == GLFW_KEY_F14) {
     renderTile = renderTileCurvature;
+    g_changed = true;
+  }
+  else if (key == GLFW_KEY_F14) {
+    renderTile = renderTileDiffuseAlbedo;;
     g_changed = true;
   }
 }
